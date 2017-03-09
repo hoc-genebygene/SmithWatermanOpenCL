@@ -27,14 +27,28 @@
 //    padded_row[z + pow2(depth+1) - 1] = max(left_elem, right_elem) + (pow2(depth) * GAP_EXTEND_PENALTY);
 //}
 
-kernel void calc_fmat_row(global int * f_mat_prev_row, global int * h_mat_prev_row, global int * f_mat_row) {
+kernel void calc_f_mat_row(global int * f_mat_prev_row, global int * h_mat_prev_row, global int * f_mat_row) {
 	const int id = get_global_id(0);
 
 	f_mat_row[id] = max(f_mat_prev_row[id], h_mat_prev_row[id] + GAP_START_PENALTY) + GAP_EXTEND_PENALTY;
 }
 
+kernel void calc_h_hat_mat_row(global int * h_hat_mat_row, global int * h_mat_prev_diag_row, global int * subs_score_row, global int * f_mat_row) {
+    const int id = get_global_id(0);
+
+    if (id != 0) {
+        h_hat_mat_row_buffer[id] = max(max(h_mat_prev_diag_row[id-1] + subs_score_row[id], f_mat_row_buffer[id]), 0);
+    } else {
+        h_hat_mat_row_buffer[id] = 0;
+    }
+}
+
 int pow2(int pow) {
 	return 1 << pow;
+}
+
+kernel void zero(global int * row) {
+    row[get_global_id(0)] = 0;
 }
 
 kernel void upsweep(global int * padded_row, const int depth) {

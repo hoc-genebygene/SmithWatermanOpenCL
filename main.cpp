@@ -5,6 +5,7 @@
 #include <fstream>
 #include <cassert>
 #include <chrono>
+#include <map>
 
 #include <random>
 
@@ -629,7 +630,7 @@ int main ()
     cl_uint count = 1;
 
     // Here we're ready to actually run the code
-    std::vector<char> kernel_bytes = ReadKernelFromFilename("C:/SmithWatermanOpenCL/src/SW_kernels.cl");
+    std::vector<char> kernel_bytes = ReadKernelFromFilename("/Users/hocheung20/SmithWatermanOpenCL/src/SW_kernels.cl");
 
     std::string kernel_bytes_string(kernel_bytes.begin(), kernel_bytes.end());
 
@@ -671,8 +672,8 @@ int main ()
     DataType gap_start_penalty = -8;
     DataType gap_extend_penalty = -1;
 
-    //std::string seq1 = "CAGCCTCGCTTAG";
-    //std::string seq2 = "AATGCCATTGCCGG";
+//    std::string seq1 = "CAGCCTCGCTTAG";
+//    std::string seq2 = "AATGCCATTGCCGG";
 
     std::string seq1 = GenerateRandomNucleotideString(20'000'000); // columns
     std::string seq2 = GenerateRandomNucleotideString(150); // rows
@@ -714,6 +715,39 @@ int main ()
     cl_mem padded_row_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(DataType) * padded_row_size, NULL, &error);
     CheckError(error);
 
+    std::map<char, std::vector<DataType>> query_character_row_score_map;
+    {
+        // A
+        std::vector<DataType> a_vec(seq1.size()+1, 0);
+        for (int c = 1; c < a_vec.size(); ++c) {
+            a_vec[c] = seq1[c-1] == 'A' ? match : mismatch;
+        }
+
+        // C
+        std::vector<DataType> c_vec(seq1.size()+1, 0);
+        for (int c = 1; c < c_vec.size(); ++c) {
+            c_vec[c] = seq1[c-1] == 'C' ? match : mismatch;
+        }
+
+        // G
+        std::vector<DataType> g_vec(seq1.size()+1, 0);
+        for (int c = 1; c < g_vec.size(); ++c) {
+            g_vec[c] = seq1[c-1] == 'G' ? match : mismatch;
+        }
+
+        // T
+        std::vector<DataType> t_vec(seq1.size()+1, 0);
+        for (int c = 1; c < t_vec.size(); ++c) {
+            t_vec[c] = seq1[c-1] == 'T' ? match : mismatch;
+        }
+
+        query_character_row_score_map.emplace('A', std::move(a_vec));
+        query_character_row_score_map.emplace('C', std::move(c_vec));
+        query_character_row_score_map.emplace('G', std::move(g_vec));
+        query_character_row_score_map.emplace('T', std::move(t_vec));
+    }
+
+
     auto start = std::chrono::steady_clock::now();
     for (size_t r = 1; r < h_mat.GetNumRows(); ++r) {
         // Calculate f_mat_row on host
@@ -723,7 +757,7 @@ int main ()
         }
 #pragma omp parallel for
         for (int64_t c = 1; c < e_mat_row_buffer.GetLength(); ++c) {
-            h_hat_mat_row_buffer[c] = std::max(std::max(h_mat[r-1][c-1] + (seq2.at(r-1) == seq1.at(c-1) ? match : mismatch), f_mat_row_buffer[c]), static_cast<DataType>(0));
+            h_hat_mat_row_buffer[c] = std::max(std::max(h_mat[r-1][c-1] + query_character_row_score_map[seq2[r-1]][c], f_mat_row_buffer[c]), static_cast<DataType>(0));
         }
 
         {
