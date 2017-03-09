@@ -3,6 +3,7 @@
 #include <vector>
 #include <string>
 #include <fstream>
+#include <cassert>
 
 #include <random>
 
@@ -69,6 +70,49 @@ private:
     size_t num_cols_;
     
     std::vector<T> vec_;
+};
+
+template <class T>
+class RowBuffer {
+public:
+    RowBuffer(size_t length, const T & value) : length_(length) {
+        arr_ = new T[length];
+        for (size_t k = 0; k < length; ++k) {
+            arr_[k] = value;
+        }
+    }
+
+    ~RowBuffer() {
+        delete [] arr_;
+    }
+
+    RowBuffer(const RowBuffer & other) = delete;
+//    RowBuffer(RowBuffer && other) {
+//        arr_ = other.arr_;
+//        length_ = other.length_;
+//        other.arr_ = nullptr;
+//    }
+
+    RowBuffer(RowBuffer && other) = delete;
+
+    RowBuffer& operator=(const RowBuffer & other) = delete;
+    RowBuffer& operator=(RowBuffer && other) {
+        assert(other.length_ == length_);
+
+        T* temp = other.arr_;
+        other.arr_ = arr_;
+        arr_ = temp;
+
+        return *this;
+    }
+
+    T& operator[] (size_t index) { return arr_[index]; }
+
+    size_t GetLength() { return length_; }
+private:
+    T* arr_;
+
+    size_t length_;
 };
 
 const char *getErrorString(cl_int error)
@@ -582,7 +626,7 @@ int main ()
     cl_uint count = 1;
 
     // Here we're ready to actually run the code
-    std::vector<char> kernel_bytes = ReadKernelFromFilename("/Users/hocheung20/SmithWatermanOpenCL/src/square_kernel.cl");
+    std::vector<char> kernel_bytes = ReadKernelFromFilename("/Users/hocheung20/SmithWatermanOpenCL/src/SW_kernels.cl");
 
     std::string kernel_bytes_string(kernel_bytes.begin(), kernel_bytes.end());
 
@@ -627,18 +671,25 @@ int main ()
 //    std::string seq1 = "CAGCCTCGCTTAG";
 //    std::string seq2 = "AATGCCATTGCCGG";
 
-    std::string seq1 = GenerateRandomNucleotideString(2000000); // columns
-    std::string seq2 = GenerateRandomNucleotideString(150); // rows
+    std::string seq1 = GenerateRandomNucleotideString(249250621); // columns
+    std::string seq2 = GenerateRandomNucleotideString(1); // rows
 
     std::cout << "seq1.size(): " << seq1.size() << std::endl;
     std::cout << "seq2.size(): " << seq2.size() << std::endl;
 
-    Matrix<DataType> e_mat(seq2.size() + 1, seq1.size() + 1, 0);
-    Matrix<DataType> f_mat(seq2.size() + 1, seq1.size() + 1, 0);
+    //Matrix<DataType> e_mat(seq2.size() + 1, seq1.size() + 1, 0);
+    //Matrix<DataType> f_mat(seq2.size() + 1, seq1.size() + 1, 0);
     Matrix<DataType> h_mat(seq2.size() + 1, seq1.size() + 1, 0);
-    Matrix<DataType> h_hat_mat(seq2.size() + 1, seq1.size() + 1, 0);
+    //Matrix<DataType> h_hat_mat(seq2.size() + 1, seq1.size() + 1, 0);
 
-    const size_t padded_row_size = GetPaddedRowSize(e_mat.GetNumCols());
+    RowBuffer<DataType> e_mat_row_buffer(seq1.size() + 1, 0);
+    RowBuffer<DataType> f_mat_row_buffer(seq1.size() + 1, 0);
+    RowBuffer<DataType> f_mat_prev_row_buffer(seq1.size() + 1, 0);
+    RowBuffer<DataType> h_hat_mat_row_buffer(seq1.size() + 1, 0);
+
+    const size_t padded_row_size = GetPaddedRowSize(e_mat_row_buffer.GetLength());
+
+    std::cout << "Padded row size: " << padded_row_size << std::endl;
 
     auto pow_of_2 = [](const size_t pow)
     {
@@ -646,7 +697,7 @@ int main ()
     };
 
 
-    auto log2 = [](size_t num) { // This has no branching on GPU
+    auto log2 = [](size_t num) {
         size_t log = 0;
 
         while (num != 0) {
@@ -657,34 +708,32 @@ int main ()
         return log-1;
     };
 
-    cl_mem padded_row_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE | CL_MEM_ALLOC_HOST_PTR, sizeof(DataType) * padded_row_size, NULL, &error);
+    cl_mem padded_row_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(DataType) * padded_row_size, NULL, &error);
     CheckError(error);
 
     auto start = std::chrono::steady_clock::now();
-    for (int r = 1; r < f_mat.GetNumRows(); ++r) {
+    for (int r = 1; r < h_mat.GetNumRows(); ++r) {
         // Calculate f_mat_row on host
-        for (int c = 1; c < e_mat.GetNumCols(); ++c) {
-            f_mat[r][c] = std::max(f_mat[r-1][c], h_mat[r-1][c] + gap_start_penalty) + gap_extend_penalty;
-
-            auto S_ij = seq2.at(r-1) == seq1.at(c-1) ? match : mismatch;
-            h_hat_mat[r][c] = std::max(std::max(h_mat[r-1][c-1] + S_ij, f_mat[r][c]), (DataType)0);
+        auto start2 = std::chrono::steady_clock::now();
+        for (int c = 1; c < e_mat_row_buffer.GetLength(); ++c) {
+            f_mat_row_buffer[c] = std::max(f_mat_prev_row_buffer[c], h_mat[r-1][c] + gap_start_penalty) + gap_extend_penalty;
         }
 
-        // Calculate h_hat_mat row on host
-        for (int c = 1; c < e_mat.GetNumCols(); ++c) {
-            auto S_ij = seq2.at(r-1) == seq1.at(c-1) ? match : mismatch;
-            h_hat_mat[r][c] = std::max(std::max(h_mat[r-1][c-1] + S_ij, f_mat[r][c]), static_cast<DataType>(0));
+        for (int c = 1; c < e_mat_row_buffer.GetLength(); ++c) {
+            h_hat_mat_row_buffer[c] = std::max(std::max(h_mat[r-1][c-1] + (seq2.at(r-1) == seq1.at(c-1) ? match : mismatch), f_mat_row_buffer[c]), static_cast<DataType>(0));
         }
+        auto stop2 = std::chrono::steady_clock::now();
+        std::cout << "Loop took: " << std::chrono::duration_cast<std::chrono::milliseconds>(stop2-start2).count() << " ms" << std::endl;
 
         {
             // initialize padded_row
             DataType * padded_row_host_ptr = (DataType *)clEnqueueMapBuffer(command_queue, padded_row_buffer, CL_TRUE, CL_MAP_WRITE, 0, padded_row_size, 0, NULL, NULL, &error);
 
-            for (int c = 0; c < h_hat_mat.GetNumCols(); ++c) {
-                padded_row_host_ptr[c] = h_hat_mat[r][c];
+            for (int c = 0; c < h_hat_mat_row_buffer.GetLength(); ++c) {
+                padded_row_host_ptr[c] = h_hat_mat_row_buffer[c];
             }
 
-            for (int c = h_hat_mat.GetNumCols(); c < padded_row_size; ++c) {
+            for (int c = h_hat_mat_row_buffer.GetLength(); c < padded_row_size; ++c) {
                 padded_row_host_ptr[c] = 0;
             }
 
@@ -727,23 +776,25 @@ int main ()
         {
             DataType * padded_row_host_ptr = (DataType *)clEnqueueMapBuffer(command_queue, padded_row_buffer, CL_TRUE, CL_MAP_READ, 0, padded_row_size, 0, NULL, NULL, &error);
 
-            for (int c = 0; c < e_mat.GetNumCols(); ++c) {
-                e_mat[r][c] = padded_row_host_ptr[c];
+            for (int c = 0; c < e_mat_row_buffer.GetLength(); ++c) {
+                e_mat_row_buffer[c] = padded_row_host_ptr[c];
             }
 
             clEnqueueUnmapMemObject(command_queue, padded_row_buffer, padded_row_host_ptr, 0, nullptr, nullptr);
         }
 
-        for (int c = 0; c < e_mat.GetNumCols(); ++c) {
-            h_mat[r][c] = std::max(h_hat_mat[r][c], e_mat[r][c] + gap_start_penalty);
+        for (int c = 0; c < e_mat_row_buffer.GetLength(); ++c) {
+            h_mat[r][c] = std::max(h_hat_mat_row_buffer[c], e_mat_row_buffer[c] + gap_start_penalty);
         }
+
+        f_mat_prev_row_buffer = std::move(f_mat_row_buffer);
     }
     auto stop = std::chrono::steady_clock::now();
 
     std::cout << "SW took: " << std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count() << " ms" << std::endl;
 
-//    for (int r = 0; r < e_mat.GetNumRows(); ++r) {
-//        for (int c = 0; c < e_mat.GetNumCols(); ++c) {
+//    for (int r = 0; r < h_mat.GetNumRows(); ++r) {
+//        for (int c = 0; c < h_mat.GetNumCols(); ++c) {
 //            std::cout << h_mat[r][c] << "\t";
 //        }
 //        std::cout << "\n";
