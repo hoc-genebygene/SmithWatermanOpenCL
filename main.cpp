@@ -4,6 +4,7 @@
 #include <string>
 #include <fstream>
 #include <cassert>
+#include <chrono>
 
 #include <random>
 
@@ -12,6 +13,8 @@
 #else
 #include "CL/cl.h"
 #endif
+
+//#include "omp.h"
 
 std::string GenerateRandomNucleotideString(size_t length) {
     std::random_device rd;
@@ -514,7 +517,7 @@ void PrintDeviceInfo(cl_device_id device_id) {
     std::cout << "Global Mem Cache Size: " << info.device_global_mem_cache_size << std::endl;
     std::cout << "Global Mem Cache Type: " << info.device_global_mem_cache_type << std::endl;
     std::cout << "Global Mem Cacheline Size: " << info.device_global_mem_cacheline_size << std::endl;
-    std::cout << "Gloval Mem Size: " << info.device_global_mem_size << std::endl;
+    std::cout << "Global Mem Size: " << info.device_global_mem_size << std::endl;
 //    std::cout << "Half FP Config: " << info.device_half_fp_config << std::endl;
     std::cout << "Image support: " << info.device_image_support << std::endl;
     std::cout << "2D Image Max Height: " << info.device_image2d_max_height << std::endl;
@@ -616,7 +619,7 @@ int main ()
     
     std::cout << "Context created" << std::endl;
 
-    size_t DEVICE_NUMBER=2;
+    size_t DEVICE_NUMBER=0;
 
     PrintDeviceInfo(deviceIds[DEVICE_NUMBER]);
 
@@ -626,7 +629,7 @@ int main ()
     cl_uint count = 1;
 
     // Here we're ready to actually run the code
-    std::vector<char> kernel_bytes = ReadKernelFromFilename("/Users/hocheung20/SmithWatermanOpenCL/src/SW_kernels.cl");
+    std::vector<char> kernel_bytes = ReadKernelFromFilename("C:/SmithWatermanOpenCL/src/SW_kernels.cl");
 
     std::string kernel_bytes_string(kernel_bytes.begin(), kernel_bytes.end());
 
@@ -661,18 +664,18 @@ int main ()
     cl_kernel downsweep_kernel = clCreateKernel(program, "downsweep", &error);
     CheckError(error);
 
-    using DataType = int64_t;
+    using DataType = int32_t;
 
     DataType match = 5;
     DataType mismatch = -3;
     DataType gap_start_penalty = -8;
     DataType gap_extend_penalty = -1;
 
-//    std::string seq1 = "CAGCCTCGCTTAG";
-//    std::string seq2 = "AATGCCATTGCCGG";
+    //std::string seq1 = "CAGCCTCGCTTAG";
+    //std::string seq2 = "AATGCCATTGCCGG";
 
-    std::string seq1 = GenerateRandomNucleotideString(249250621); // columns
-    std::string seq2 = GenerateRandomNucleotideString(1); // rows
+    std::string seq1 = GenerateRandomNucleotideString(20'000'000); // columns
+    std::string seq2 = GenerateRandomNucleotideString(150); // rows
 
     std::cout << "seq1.size(): " << seq1.size() << std::endl;
     std::cout << "seq2.size(): " << seq2.size() << std::endl;
@@ -712,28 +715,27 @@ int main ()
     CheckError(error);
 
     auto start = std::chrono::steady_clock::now();
-    for (int r = 1; r < h_mat.GetNumRows(); ++r) {
+    for (size_t r = 1; r < h_mat.GetNumRows(); ++r) {
         // Calculate f_mat_row on host
-        auto start2 = std::chrono::steady_clock::now();
-        for (int c = 1; c < e_mat_row_buffer.GetLength(); ++c) {
+#pragma omp parallel for
+        for (int64_t c = 1; c < e_mat_row_buffer.GetLength(); ++c) {
             f_mat_row_buffer[c] = std::max(f_mat_prev_row_buffer[c], h_mat[r-1][c] + gap_start_penalty) + gap_extend_penalty;
         }
-
-        for (int c = 1; c < e_mat_row_buffer.GetLength(); ++c) {
+#pragma omp parallel for
+        for (int64_t c = 1; c < e_mat_row_buffer.GetLength(); ++c) {
             h_hat_mat_row_buffer[c] = std::max(std::max(h_mat[r-1][c-1] + (seq2.at(r-1) == seq1.at(c-1) ? match : mismatch), f_mat_row_buffer[c]), static_cast<DataType>(0));
         }
-        auto stop2 = std::chrono::steady_clock::now();
-        std::cout << "Loop took: " << std::chrono::duration_cast<std::chrono::milliseconds>(stop2-start2).count() << " ms" << std::endl;
 
         {
             // initialize padded_row
-            DataType * padded_row_host_ptr = (DataType *)clEnqueueMapBuffer(command_queue, padded_row_buffer, CL_TRUE, CL_MAP_WRITE, 0, padded_row_size, 0, NULL, NULL, &error);
-
-            for (int c = 0; c < h_hat_mat_row_buffer.GetLength(); ++c) {
+            DataType * padded_row_host_ptr = (DataType *)clEnqueueMapBuffer(command_queue, padded_row_buffer, CL_TRUE, CL_MAP_WRITE, 0, sizeof(DataType) * padded_row_size, 0, NULL, NULL, &error);
+			CheckError(error);
+#pragma omp parallel for
+            for (int64_t c = 0; c < h_hat_mat_row_buffer.GetLength(); ++c) {
                 padded_row_host_ptr[c] = h_hat_mat_row_buffer[c];
             }
-
-            for (int c = h_hat_mat_row_buffer.GetLength(); c < padded_row_size; ++c) {
+#pragma omp parallel for
+            for (int64_t c = h_hat_mat_row_buffer.GetLength(); c < padded_row_size; ++c) {
                 padded_row_host_ptr[c] = 0;
             }
 
@@ -745,7 +747,7 @@ int main ()
         for (size_t depth = 0; depth < log2(padded_row_size); ++depth) {
             error = 0;
             error = clSetKernelArg(upsweep_kernel, 0, sizeof(cl_mem), &padded_row_buffer);
-            error |= clSetKernelArg(upsweep_kernel, 1, sizeof(cl_long), &depth);
+            error |= clSetKernelArg(upsweep_kernel, 1, sizeof(cl_int), &depth);
             CheckError(error);
 
             size_t global = padded_row_size / pow_of_2(depth+1);
@@ -754,7 +756,8 @@ int main ()
         }
 
         {
-            DataType * padded_row_host_ptr = (DataType *)clEnqueueMapBuffer(command_queue, padded_row_buffer, CL_TRUE, CL_MAP_WRITE, 0, padded_row_size, 0, NULL, NULL, &error);
+            DataType * padded_row_host_ptr = (DataType *)clEnqueueMapBuffer(command_queue, padded_row_buffer, CL_TRUE, CL_MAP_WRITE, 0, sizeof(DataType) * padded_row_size, 0, NULL, NULL, &error);
+			CheckError(error);
 
             padded_row_host_ptr[padded_row_size-1] = 0;
 
@@ -765,7 +768,7 @@ int main ()
         for (int64_t depth = log2(padded_row_size) - 1; depth >= 0; --depth) {
             error = 0;
             error = clSetKernelArg(downsweep_kernel, 0, sizeof(cl_mem), &padded_row_buffer);
-            error |= clSetKernelArg(downsweep_kernel, 1, sizeof(cl_long), &depth);
+            error |= clSetKernelArg(downsweep_kernel, 1, sizeof(cl_int), &depth);
             CheckError(error);
 
             size_t global = padded_row_size / pow_of_2(depth+1);
@@ -774,16 +777,17 @@ int main ()
         }
 
         {
-            DataType * padded_row_host_ptr = (DataType *)clEnqueueMapBuffer(command_queue, padded_row_buffer, CL_TRUE, CL_MAP_READ, 0, padded_row_size, 0, NULL, NULL, &error);
-
-            for (int c = 0; c < e_mat_row_buffer.GetLength(); ++c) {
+            DataType * padded_row_host_ptr = (DataType *)clEnqueueMapBuffer(command_queue, padded_row_buffer, CL_TRUE, CL_MAP_READ, 0, sizeof(DataType) * padded_row_size, 0, NULL, NULL, &error);
+			CheckError(error);
+#pragma omp parallel for
+            for (int64_t c = 0; c < e_mat_row_buffer.GetLength(); ++c) {
                 e_mat_row_buffer[c] = padded_row_host_ptr[c];
             }
 
             clEnqueueUnmapMemObject(command_queue, padded_row_buffer, padded_row_host_ptr, 0, nullptr, nullptr);
         }
-
-        for (int c = 0; c < e_mat_row_buffer.GetLength(); ++c) {
+#pragma omp parallel for
+        for (int64_t c = 0; c < e_mat_row_buffer.GetLength(); ++c) {
             h_mat[r][c] = std::max(h_hat_mat_row_buffer[c], e_mat_row_buffer[c] + gap_start_penalty);
         }
 
