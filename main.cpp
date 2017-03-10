@@ -688,11 +688,11 @@ int main ()
     DataType gap_start_penalty = -8;
     DataType gap_extend_penalty = -1;
 
-//    std::string seq1 = "CAGCCTCGCTTAG";
-//    std::string seq2 = "AATGCCATTGCCGG";
+    std::string seq1 = "CAGCCTCGCTTAG";
+    std::string seq2 = "AATGCCATTGCCGG";
 
-    std::string seq1 = GenerateRandomNucleotideString(20'000'000); // columns
-    std::string seq2 = GenerateRandomNucleotideString(150); // rows
+//    std::string seq1 = GenerateRandomNucleotideString(20'000'000); // columns
+//    std::string seq2 = GenerateRandomNucleotideString(150); // rows
 
     std::cout << "seq1.size(): " << seq1.size() << std::endl;
     std::cout << "seq2.size(): " << seq2.size() << std::endl;
@@ -891,6 +891,7 @@ int main ()
             CheckError(error);
         }
 
+        // Copy to host
         {
             cl_event h_mat_to_host_finished;
             error = clEnqueueReadBuffer(command_queue, h_mat_row_buffer, CL_FALSE, 0, sizeof(DataType) * row_size, h_mat[r], 1, &h_mat_finished, &h_mat_to_host_finished);
@@ -910,7 +911,7 @@ int main ()
     auto SW_time_milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count();
 
     std::cout << "SW took: " << SW_time_milliseconds << " ms" << std::endl;
-    std::cout << "Estimated time to search entire genome: " << SW_time_milliseconds * (3'000'000'000 / seq1.size()) / 1000.0 << " s" << std::endl;
+    std::cout << "Estimated time to search entire genome: " << SW_time_milliseconds * (3000000000 / seq1.size()) / 1000.0 << " s" << std::endl;
 
 //    for (int r = 0; r < h_mat.GetNumRows(); ++r) {
 //        for (int c = 0; c < h_mat.GetNumCols(); ++c) {
@@ -920,11 +921,23 @@ int main ()
 //    }
 //    std::cout << std::endl;
 
+    clReleaseMemObject(f_mat_row_buffer);
+    clReleaseMemObject(f_mat_prev_row_buffer);
+    clReleaseMemObject(h_mat_row_buffer);
+    clReleaseMemObject(h_mat_prev_row_buffer);
+    clReleaseMemObject(h_hat_mat_row_buffer);
     clReleaseMemObject(padded_row_buffer);
-    clReleaseProgram(program);
+    clReleaseMemObject(subs_score_row_buffer);
+
     clReleaseKernel(f_mat_row_kernel);
+    clReleaseKernel(h_hat_mat_row_kernel);
     clReleaseKernel(upsweep_kernel);
     clReleaseKernel(downsweep_kernel);
+    clReleaseKernel(h_mat_row_kernel);
+    clReleaseKernel(zero_kernel);
+
+    clReleaseProgram(program);
+
     clReleaseCommandQueue(command_queue);
     clReleaseContext (context);
 }
