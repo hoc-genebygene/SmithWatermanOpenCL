@@ -798,7 +798,8 @@ int main ()
     for (size_t r = 1; r < h_mat.GetNumRows(); ++r) {
         cl_event subs_score_load_finished;
 
-        clEnqueueWriteBuffer(command_queue, subs_score_row_buffer, CL_FALSE, 0, sizeof(DataType) * row_size, query_character_row_score_map[seq2[r-1]].data(), 0, nullptr, &subs_score_load_finished);
+        error = clEnqueueWriteBuffer(command_queue, subs_score_row_buffer, CL_FALSE, 0, sizeof(DataType) * row_size, query_character_row_score_map[seq2[r - 1]].data(), 0, nullptr, &subs_score_load_finished);
+        CheckError(error);
 
         cl_event f_mat_finished;
         // Calculate f_mat_row
@@ -930,22 +931,21 @@ int main ()
             clReleaseEvent(downsweep_finished);
         }
 
-//        // Copy to host
-//        {
-//            cl_event h_mat_to_host_finished;
-//            error = clEnqueueReadBuffer(command_queue, h_mat_row_buffer, CL_FALSE, 0, sizeof(DataType) * row_size, h_mat[r], 1, &h_mat_finished, &h_mat_to_host_finished); // Somehow bugged? Crashes Nsight
-//            CheckError(error);
-//
-//            error = clEnqueueBarrierWithWaitList(command_queue, 1, &h_mat_to_host_finished, nullptr);
-//            CheckError(error);
-//        }
-
-        // Skip copying to host
+        // Copy to host
         {
-            error = clEnqueueBarrierWithWaitList(command_queue, 1, &h_mat_finished, nullptr);
+            error = clEnqueueReadBuffer(command_queue, h_mat_row_buffer, CL_FALSE, 0, sizeof(DataType) * row_size, h_mat[r], 1, &h_mat_finished, nullptr); // Somehow bugged? Crashes Nsight
             CheckError(error);
             clReleaseEvent(h_mat_finished);
+
+            clFinish(command_queue);
         }
+
+        //// Skip copying to host
+        //{
+        //    clFinish(command_queue);
+        //}
+
+
         std::swap(f_mat_row_buffer, f_mat_prev_row_buffer);
         std::swap(h_mat_row_buffer, h_mat_prev_row_buffer);
     }
