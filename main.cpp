@@ -697,15 +697,7 @@ int main ()
     std::cout << "seq1.size(): " << seq1.size() << std::endl;
     std::cout << "seq2.size(): " << seq2.size() << std::endl;
 
-    //Matrix<DataType> e_mat(seq2.size() + 1, seq1.size() + 1, 0);
-    //Matrix<DataType> f_mat(seq2.size() + 1, seq1.size() + 1, 0);
     Matrix<DataType> h_mat(seq2.size() + 1, seq1.size() + 1, 0);
-    //Matrix<DataType> h_hat_mat(seq2.size() + 1, seq1.size() + 1, 0);
-
-//    RowBuffer<DataType> e_mat_row_buffer(seq1.size() + 1, 0);
-//    RowBuffer<DataType> f_mat_row_buffer(seq1.size() + 1, 0);
-//    RowBuffer<DataType> f_mat_prev_row_buffer(seq1.size() + 1, 0);
-//    RowBuffer<DataType> h_hat_mat_row_buffer(seq1.size() + 1, 0);
 
     const size_t row_size = seq1.size() + 1;
     const size_t padded_row_size = GetPaddedRowSize(row_size);
@@ -749,7 +741,16 @@ int main ()
     cl_mem padded_row_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(DataType) * padded_row_size, NULL, &error); // This also doubles as e_mat row
     CheckError(error);
 
-    cl_mem subs_score_row_buffer = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(DataType) * row_size, NULL, &error);
+    cl_mem a_subs_score_row_buffer = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(DataType) * row_size, NULL, &error);
+    CheckError(error);
+
+    cl_mem c_subs_score_row_buffer = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(DataType) * row_size, NULL, &error);
+    CheckError(error);
+
+    cl_mem g_subs_score_row_buffer = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(DataType) * row_size, NULL, &error);
+    CheckError(error);
+
+    cl_mem t_subs_score_row_buffer = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(DataType) * row_size, NULL, &error);
     CheckError(error);
 
     ZeroRow(f_mat_row_buffer, row_size, zero_kernel, command_queue);
@@ -758,49 +759,58 @@ int main ()
     ZeroRow(h_mat_prev_row_buffer, row_size, zero_kernel, command_queue);
     ZeroRow(h_hat_mat_row_buffer, row_size, zero_kernel, command_queue);
     ZeroRow(padded_row_buffer, padded_row_size, zero_kernel, command_queue);
-    ZeroRow(subs_score_row_buffer, row_size, zero_kernel, command_queue);
+    ZeroRow(a_subs_score_row_buffer, row_size, zero_kernel, command_queue);
+    ZeroRow(c_subs_score_row_buffer, row_size, zero_kernel, command_queue);
+    ZeroRow(g_subs_score_row_buffer, row_size, zero_kernel, command_queue);
+    ZeroRow(t_subs_score_row_buffer, row_size, zero_kernel, command_queue);
 
     clFinish(command_queue);
 
-    std::map<char, std::vector<DataType>> query_character_row_score_map;
+    std::map<char, cl_mem> query_character_row_score_map;
     {
         // A
-        std::vector<DataType> a_vec(seq1.size()+1, 0);
-        for (int c = 1; c < a_vec.size(); ++c) {
+        std::vector<DataType> a_vec(row_size, 0);
+        for (int c = 1; c < row_size; ++c) {
             a_vec[c] = seq1[c-1] == 'A' ? match : mismatch;
         }
 
+        clEnqueueWriteBuffer(command_queue, a_subs_score_row_buffer, CL_FALSE, 0, sizeof(DataType) * row_size, a_vec.data(), 0, nullptr, nullptr);
+
         // C
-        std::vector<DataType> c_vec(seq1.size()+1, 0);
-        for (int c = 1; c < c_vec.size(); ++c) {
+        std::vector<DataType> c_vec(row_size, 0);
+        for (int c = 1; c < row_size; ++c) {
             c_vec[c] = seq1[c-1] == 'C' ? match : mismatch;
         }
 
+        clEnqueueWriteBuffer(command_queue, c_subs_score_row_buffer, CL_FALSE, 0, sizeof(DataType) * row_size, c_vec.data(), 0, nullptr, nullptr);
+
         // G
-        std::vector<DataType> g_vec(seq1.size()+1, 0);
-        for (int c = 1; c < g_vec.size(); ++c) {
+        std::vector<DataType> g_vec(row_size, 0);
+        for (int c = 1; c < row_size; ++c) {
             g_vec[c] = seq1[c-1] == 'G' ? match : mismatch;
         }
 
+        clEnqueueWriteBuffer(command_queue, g_subs_score_row_buffer, CL_FALSE, 0, sizeof(DataType) * row_size, g_vec.data(), 0, nullptr, nullptr);
+
         // T
-        std::vector<DataType> t_vec(seq1.size()+1, 0);
-        for (int c = 1; c < t_vec.size(); ++c) {
+        std::vector<DataType> t_vec(row_size, 0);
+        for (int c = 1; c < row_size; ++c) {
             t_vec[c] = seq1[c-1] == 'T' ? match : mismatch;
         }
 
-        query_character_row_score_map.emplace('A', std::move(a_vec));
-        query_character_row_score_map.emplace('C', std::move(c_vec));
-        query_character_row_score_map.emplace('G', std::move(g_vec));
-        query_character_row_score_map.emplace('T', std::move(t_vec));
+        clEnqueueWriteBuffer(command_queue, t_subs_score_row_buffer, CL_FALSE, 0, sizeof(DataType) * row_size, t_vec.data(), 0, nullptr, nullptr);
+
+        query_character_row_score_map.emplace('A', a_subs_score_row_buffer);
+        query_character_row_score_map.emplace('C', c_subs_score_row_buffer);
+        query_character_row_score_map.emplace('G', g_subs_score_row_buffer);
+        query_character_row_score_map.emplace('T', t_subs_score_row_buffer);
+
+        clFinish(command_queue);
     }
+
 
     auto start = std::chrono::steady_clock::now();
     for (size_t r = 1; r < h_mat.GetNumRows(); ++r) {
-        cl_event subs_score_load_finished;
-
-        error = clEnqueueWriteBuffer(command_queue, subs_score_row_buffer, CL_FALSE, 0, sizeof(DataType) * row_size, query_character_row_score_map[seq2[r - 1]].data(), 0, nullptr, &subs_score_load_finished);
-        CheckError(error);
-
         cl_event f_mat_finished;
         // Calculate f_mat_row
         {
@@ -816,26 +826,36 @@ int main ()
             CheckError(error);
         }
 
+//        {
+//            cl_mem subs_score_row_buffer = query_character_row_score_map[seq2[r-1]];
+//
+//            DataType * subs_score_row_buffer_host_ptr = (DataType *)clEnqueueMapBuffer(command_queue, subs_score_row_buffer, CL_TRUE, CL_MAP_READ, 0, sizeof(DataType) * row_size, 0, nullptr, nullptr, &error);
+//            CheckError(error);
+//
+//            std::cout << "subs_score_row[" << r << "]: ";
+//            for (int c = 0; c < row_size; ++c) {
+//                std::cout << subs_score_row_buffer_host_ptr[c] << "\t";
+//            }
+//            std::cout << std::endl;
+//
+//            clEnqueueUnmapMemObject(command_queue, subs_score_row_buffer, subs_score_row_buffer_host_ptr, 0, nullptr, nullptr);
+//        }
+
         cl_event h_hat_mat_finished;
         // Calculate h_hat_mat_row
         {
-            cl_event h_hat_mat_wait_events[2];
-            h_hat_mat_wait_events[0] = subs_score_load_finished;
-            h_hat_mat_wait_events[1] = f_mat_finished;
-
             error = 0;
             error = clSetKernelArg(h_hat_mat_row_kernel, 0, sizeof(cl_mem), &h_mat_prev_row_buffer);
-            error |= clSetKernelArg(h_hat_mat_row_kernel, 1, sizeof(cl_mem), &subs_score_row_buffer);
+            error |= clSetKernelArg(h_hat_mat_row_kernel, 1, sizeof(cl_mem), &(query_character_row_score_map[seq2[r-1]]));
             error |= clSetKernelArg(h_hat_mat_row_kernel, 2, sizeof(cl_mem), &f_mat_row_buffer);
             error |= clSetKernelArg(h_hat_mat_row_kernel, 3, sizeof(cl_mem), &h_hat_mat_row_buffer);
 
             CheckError(error);
 
             size_t global = row_size;
-            error = clEnqueueNDRangeKernel(command_queue, h_hat_mat_row_kernel, 1, NULL, &global, nullptr, 2, h_hat_mat_wait_events, &h_hat_mat_finished);
+            error = clEnqueueNDRangeKernel(command_queue, h_hat_mat_row_kernel, 1, NULL, &global, nullptr, 1, &f_mat_finished, &h_hat_mat_finished);
             CheckError(error);
 
-            clReleaseEvent(subs_score_load_finished);
             clReleaseEvent(f_mat_finished);
         }
 
@@ -933,7 +953,7 @@ int main ()
 
         // Copy to host
         {
-            error = clEnqueueReadBuffer(command_queue, h_mat_row_buffer, CL_FALSE, 0, sizeof(DataType) * row_size, h_mat[r], 1, &h_mat_finished, nullptr); // Somehow bugged? Crashes Nsight
+            error = clEnqueueReadBuffer(command_queue, h_mat_row_buffer, CL_FALSE, 0, sizeof(DataType) * row_size, h_mat[r], 1, &h_mat_finished, nullptr);
             CheckError(error);
             clReleaseEvent(h_mat_finished);
 
@@ -944,7 +964,6 @@ int main ()
         //{
         //    clFinish(command_queue);
         //}
-
 
         std::swap(f_mat_row_buffer, f_mat_prev_row_buffer);
         std::swap(h_mat_row_buffer, h_mat_prev_row_buffer);
@@ -969,7 +988,11 @@ int main ()
     clReleaseMemObject(h_mat_prev_row_buffer);
     clReleaseMemObject(h_hat_mat_row_buffer);
     clReleaseMemObject(padded_row_buffer);
-    clReleaseMemObject(subs_score_row_buffer);
+    clReleaseMemObject(a_subs_score_row_buffer);
+    clReleaseMemObject(c_subs_score_row_buffer);
+    clReleaseMemObject(g_subs_score_row_buffer);
+    clReleaseMemObject(t_subs_score_row_buffer);
+
 
     clReleaseKernel(f_mat_row_kernel);
     clReleaseKernel(h_hat_mat_row_kernel);
