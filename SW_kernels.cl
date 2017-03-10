@@ -27,20 +27,34 @@
 //    padded_row[z + pow2(depth+1) - 1] = max(left_elem, right_elem) + (pow2(depth) * GAP_EXTEND_PENALTY);
 //}
 
-kernel void calc_f_mat_row(global int * f_mat_prev_row, global int * h_mat_prev_row, global int * f_mat_row) {
+kernel void f_mat_row_kernel(global int * f_mat_prev_row, global int * h_mat_prev_row, global int * f_mat_row) {
 	const int id = get_global_id(0);
+
+    if (id == 0) {
+        return;
+    }
 
 	f_mat_row[id] = max(f_mat_prev_row[id], h_mat_prev_row[id] + GAP_START_PENALTY) + GAP_EXTEND_PENALTY;
 }
 
-kernel void calc_h_hat_mat_row(global int * h_hat_mat_row, global int * h_mat_prev_diag_row, global int * subs_score_row, global int * f_mat_row) {
+kernel void h_hat_mat_row_kernel(global int * h_mat_prev_row, global int * subs_score_row, global int * f_mat_row_buffer, global int * h_hat_mat_row_buffer) {
     const int id = get_global_id(0);
 
-    if (id != 0) {
-        h_hat_mat_row_buffer[id] = max(max(h_mat_prev_diag_row[id-1] + subs_score_row[id], f_mat_row_buffer[id]), 0);
-    } else {
-        h_hat_mat_row_buffer[id] = 0;
+    if (id == 0) {
+        return;
     }
+
+    h_hat_mat_row_buffer[id] = max(max(h_mat_prev_row[id-1] + subs_score_row[id], f_mat_row_buffer[id]), 0);
+}
+
+kernel void h_mat_row_kernel(global int * h_hat_mat_row_buffer, global int * padded_row_buffer, global int * h_mat_row_buffer) {
+    const int id = get_global_id(0);
+
+    if (id == 0) {
+        return;
+    }
+
+    h_mat_row_buffer[id] = max(h_hat_mat_row_buffer[id], padded_row_buffer[id] + GAP_START_PENALTY);
 }
 
 int pow2(int pow) {

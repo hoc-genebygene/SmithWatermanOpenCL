@@ -242,6 +242,16 @@ std::string GetDeviceName (cl_device_id id)
     return result;
 }
 
+void ZeroRow(cl_mem row, size_t row_size, cl_kernel kernel, cl_command_queue command_queue) {
+    cl_int error = CL_SUCCESS;
+    error = clSetKernelArg(kernel, 0, sizeof(cl_mem), &row);
+    CheckError(error);
+
+    size_t global = row_size;
+    error = clEnqueueNDRangeKernel(command_queue, kernel, 1, NULL, &global, nullptr, 0, nullptr, nullptr);
+    CheckError(error);
+}
+
 namespace cl {
     struct DeviceInfo {
         cl_uint device_address_bits;
@@ -656,7 +666,10 @@ int main ()
         throw std::runtime_error(getErrorString(error));
     }
 
-    cl_kernel calc_fmat_row_kernel = clCreateKernel(program, "calc_fmat_row", &error);
+    cl_kernel f_mat_row_kernel = clCreateKernel(program, "f_mat_row_kernel", &error);
+    CheckError(error);
+
+    cl_kernel h_hat_mat_row_kernel = clCreateKernel(program, "h_hat_mat_row_kernel", &error);
     CheckError(error);
 
     cl_kernel upsweep_kernel = clCreateKernel(program, "upsweep", &error);
@@ -665,6 +678,11 @@ int main ()
     cl_kernel downsweep_kernel = clCreateKernel(program, "downsweep", &error);
     CheckError(error);
 
+    cl_kernel h_mat_row_kernel = clCreateKernel(program, "h_mat_row_kernel", &error);
+    CheckError(error);
+
+    cl_kernel zero_kernel = clCreateKernel(program, "zero", &error);
+
     using DataType = int32_t;
 
     DataType match = 5;
@@ -672,11 +690,11 @@ int main ()
     DataType gap_start_penalty = -8;
     DataType gap_extend_penalty = -1;
 
-//    std::string seq1 = "CAGCCTCGCTTAG";
-//    std::string seq2 = "AATGCCATTGCCGG";
+    std::string seq1 = "CAGCCTCGCTTAG";
+    std::string seq2 = "AATGCCATTGCCGG";
 
-    std::string seq1 = GenerateRandomNucleotideString(20'000'000); // columns
-    std::string seq2 = GenerateRandomNucleotideString(150); // rows
+//    std::string seq1 = GenerateRandomNucleotideString(20'000'000); // columns
+//    std::string seq2 = GenerateRandomNucleotideString(150); // rows
 
     std::cout << "seq1.size(): " << seq1.size() << std::endl;
     std::cout << "seq2.size(): " << seq2.size() << std::endl;
@@ -686,12 +704,13 @@ int main ()
     Matrix<DataType> h_mat(seq2.size() + 1, seq1.size() + 1, 0);
     //Matrix<DataType> h_hat_mat(seq2.size() + 1, seq1.size() + 1, 0);
 
-    RowBuffer<DataType> e_mat_row_buffer(seq1.size() + 1, 0);
-    RowBuffer<DataType> f_mat_row_buffer(seq1.size() + 1, 0);
-    RowBuffer<DataType> f_mat_prev_row_buffer(seq1.size() + 1, 0);
-    RowBuffer<DataType> h_hat_mat_row_buffer(seq1.size() + 1, 0);
+//    RowBuffer<DataType> e_mat_row_buffer(seq1.size() + 1, 0);
+//    RowBuffer<DataType> f_mat_row_buffer(seq1.size() + 1, 0);
+//    RowBuffer<DataType> f_mat_prev_row_buffer(seq1.size() + 1, 0);
+//    RowBuffer<DataType> h_hat_mat_row_buffer(seq1.size() + 1, 0);
 
-    const size_t padded_row_size = GetPaddedRowSize(e_mat_row_buffer.GetLength());
+    const size_t row_size = seq1.size() + 1;
+    const size_t padded_row_size = GetPaddedRowSize(row_size);
 
     std::cout << "Padded row size: " << padded_row_size << std::endl;
 
@@ -712,8 +731,38 @@ int main ()
         return log-1;
     };
 
-    cl_mem padded_row_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(DataType) * padded_row_size, NULL, &error);
+
+
+    cl_mem f_mat_row_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(DataType) * row_size, NULL, &error);
     CheckError(error);
+
+    cl_mem f_mat_prev_row_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(DataType) * row_size, NULL, &error);
+    CheckError(error);
+
+    cl_mem h_mat_row_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(DataType) * row_size, NULL, &error);
+    CheckError(error);
+
+    cl_mem h_mat_prev_row_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(DataType) * row_size, NULL, &error);
+    CheckError(error);
+
+    cl_mem h_hat_mat_row_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(DataType) * row_size, NULL, &error);
+    CheckError(error);
+
+    cl_mem padded_row_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(DataType) * padded_row_size, NULL, &error); // This also doubles as e_mat row
+    CheckError(error);
+
+    cl_mem subs_score_row_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(DataType) * row_size, NULL, &error);
+    CheckError(error);
+
+    ZeroRow(f_mat_row_buffer, row_size, zero_kernel, command_queue);
+    ZeroRow(f_mat_prev_row_buffer, row_size, zero_kernel, command_queue);
+    ZeroRow(h_mat_row_buffer, row_size, zero_kernel, command_queue);
+    ZeroRow(h_mat_prev_row_buffer, row_size, zero_kernel, command_queue);
+    ZeroRow(h_hat_mat_row_buffer, row_size, zero_kernel, command_queue);
+    ZeroRow(padded_row_buffer, padded_row_size, zero_kernel, command_queue);
+    ZeroRow(subs_score_row_buffer, row_size, zero_kernel, command_queue);
+
+    clFinish(command_queue);
 
     std::map<char, std::vector<DataType>> query_character_row_score_map;
     {
@@ -748,34 +797,111 @@ int main ()
     }
 
 
+
     auto start = std::chrono::steady_clock::now();
     for (size_t r = 1; r < h_mat.GetNumRows(); ++r) {
-        // Calculate f_mat_row on host
-#pragma omp parallel for
-        for (int64_t c = 1; c < e_mat_row_buffer.GetLength(); ++c) {
-            f_mat_row_buffer[c] = std::max(f_mat_prev_row_buffer[c], h_mat[r-1][c] + gap_start_penalty) + gap_extend_penalty;
+//        // Calculate f_mat_row on host
+//#pragma omp parallel for
+//        for (int64_t c = 1; c < row_size; ++c) {
+//            f_mat_row_buffer[c] = std::max(f_mat_prev_row_buffer[c], h_mat[r-1][c] + gap_start_penalty) + gap_extend_penalty;
+//        }
+//#pragma omp parallel for
+//        for (int64_t c = 1; c < row_size; ++c) {
+//            h_hat_mat_row_buffer[c] = std::max(std::max(h_mat[r-1][c-1] + query_character_row_score_map[seq2[r-1]][c], f_mat_row_buffer[c]), static_cast<DataType>(0));
+//        }
+//
+//        {
+//            // initialize padded_row
+//            DataType * padded_row_host_ptr = (DataType *)clEnqueueMapBuffer(command_queue, padded_row_buffer, CL_TRUE, CL_MAP_WRITE, 0, sizeof(DataType) * padded_row_size, 0, NULL, NULL, &error);
+//			CheckError(error);
+//#pragma omp parallel for
+//            for (int64_t c = 0; c < h_hat_mat_row_buffer.GetLength(); ++c) {
+//                padded_row_host_ptr[c] = h_hat_mat_row_buffer[c];
+//            }
+//#pragma omp parallel for
+//            for (int64_t c = h_hat_mat_row_buffer.GetLength(); c < padded_row_size; ++c) {
+//                padded_row_host_ptr[c] = 0;
+//            }
+//
+//            error = clEnqueueUnmapMemObject(command_queue, padded_row_buffer, padded_row_host_ptr, 0, nullptr, nullptr);
+//            CheckError(error);
+//        }
+
+        // Calculate f_mat_row
+        {
+            error = 0;
+            error = clSetKernelArg(f_mat_row_kernel, 0, sizeof(cl_mem), &f_mat_prev_row_buffer);
+            error |= clSetKernelArg(f_mat_row_kernel, 1, sizeof(cl_mem), &h_mat_prev_row_buffer);
+            error |= clSetKernelArg(f_mat_row_kernel, 2, sizeof(cl_mem), &f_mat_row_buffer);
+
+            CheckError(error);
+
+            size_t global = row_size;
+            error = clEnqueueNDRangeKernel(command_queue, f_mat_row_kernel, 1, NULL, &global, nullptr, 0, nullptr, nullptr);
+            CheckError(error);
+
+            clFinish(command_queue);
         }
-#pragma omp parallel for
-        for (int64_t c = 1; c < e_mat_row_buffer.GetLength(); ++c) {
-            h_hat_mat_row_buffer[c] = std::max(std::max(h_mat[r-1][c-1] + query_character_row_score_map[seq2[r-1]][c], f_mat_row_buffer[c]), static_cast<DataType>(0));
+
+
+        {
+            DataType * f_mat_row_buffer_host_ptr = (DataType *)clEnqueueMapBuffer(command_queue, f_mat_row_buffer, CL_TRUE, CL_MAP_READ, 0, sizeof(DataType) * row_size, 0, NULL, NULL, &error);
+            CheckError(error);
+            std::cout << "f_mat " << r << ": ";
+            for (int64_t c = 0; c < row_size; ++c) {
+                std::cout << f_mat_row_buffer_host_ptr[c] << "\t";
+            }
+            std::cout << std::endl;
+
+            error = clEnqueueUnmapMemObject(command_queue, f_mat_row_buffer, f_mat_row_buffer_host_ptr, 0, nullptr, nullptr);
+            CheckError(error);
+        }
+
+        // Calculate h_hat_mat_row
+        {
+            error = 0;
+            error = clSetKernelArg(h_hat_mat_row_kernel, 0, sizeof(cl_mem), &h_mat_prev_row_buffer);
+
+            {
+                DataType * subs_score_row_buffer_host_ptr = (DataType *)clEnqueueMapBuffer(command_queue, subs_score_row_buffer, CL_TRUE, CL_MAP_WRITE, 0, sizeof(DataType) * row_size, 0, NULL, NULL, &error);
+                CheckError(error);
+                for (int64_t c = 1; c < row_size; ++c) {
+                    subs_score_row_buffer_host_ptr[c] = query_character_row_score_map[seq2[r-1]][c];
+                }
+
+                error = clEnqueueUnmapMemObject(command_queue, subs_score_row_buffer, subs_score_row_buffer_host_ptr, 0, nullptr, nullptr);
+                CheckError(error);
+            }
+
+            error |= clSetKernelArg(h_hat_mat_row_kernel, 1, sizeof(cl_mem), &subs_score_row_buffer);
+            error |= clSetKernelArg(h_hat_mat_row_kernel, 2, sizeof(cl_mem), &f_mat_row_buffer);
+            error |= clSetKernelArg(h_hat_mat_row_kernel, 3, sizeof(cl_mem), &h_hat_mat_row_buffer);
+
+            CheckError(error);
+
+            size_t global = row_size;
+            error = clEnqueueNDRangeKernel(command_queue, h_hat_mat_row_kernel, 1, NULL, &global, nullptr, 0, nullptr, nullptr);
+            CheckError(error);
+
+            clFinish(command_queue);
         }
 
         {
-            // initialize padded_row
-            DataType * padded_row_host_ptr = (DataType *)clEnqueueMapBuffer(command_queue, padded_row_buffer, CL_TRUE, CL_MAP_WRITE, 0, sizeof(DataType) * padded_row_size, 0, NULL, NULL, &error);
-			CheckError(error);
-#pragma omp parallel for
-            for (int64_t c = 0; c < h_hat_mat_row_buffer.GetLength(); ++c) {
-                padded_row_host_ptr[c] = h_hat_mat_row_buffer[c];
+            DataType * h_hat_mat_row_buffer_host_ptr = (DataType *)clEnqueueMapBuffer(command_queue, h_hat_mat_row_buffer, CL_TRUE, CL_MAP_READ, 0, sizeof(DataType) * row_size, 0, NULL, NULL, &error);
+            CheckError(error);
+            std::cout << "h_hat_mat " << r << ": ";
+            for (int64_t c = 0; c < row_size; ++c) {
+                std::cout << h_hat_mat_row_buffer_host_ptr[c] << "\t";
             }
-#pragma omp parallel for
-            for (int64_t c = h_hat_mat_row_buffer.GetLength(); c < padded_row_size; ++c) {
-                padded_row_host_ptr[c] = 0;
-            }
+            std::cout << std::endl;
 
-            error = clEnqueueUnmapMemObject(command_queue, padded_row_buffer, padded_row_host_ptr, 0, nullptr, nullptr);
+            error = clEnqueueUnmapMemObject(command_queue, h_hat_mat_row_buffer, h_hat_mat_row_buffer_host_ptr, 0, nullptr, nullptr);
             CheckError(error);
         }
+
+        error = clEnqueueCopyBuffer(command_queue, h_hat_mat_row_buffer, padded_row_buffer, 0, 0, row_size * sizeof(DataType), 0, nullptr, nullptr);
+        CheckError(error);
+        clFinish(command_queue);
 
         // Upsweep
         for (size_t depth = 0; depth < log2(padded_row_size); ++depth) {
@@ -787,6 +913,8 @@ int main ()
             size_t global = padded_row_size / pow_of_2(depth+1);
             error = clEnqueueNDRangeKernel(command_queue, upsweep_kernel, 1, NULL, &global, nullptr, 0, nullptr, nullptr);
             CheckError(error);
+
+            clFinish(command_queue);
         }
 
         {
@@ -808,40 +936,90 @@ int main ()
             size_t global = padded_row_size / pow_of_2(depth+1);
             error = clEnqueueNDRangeKernel(command_queue, downsweep_kernel, 1, NULL, &global, nullptr, 0, nullptr, nullptr);
             CheckError(error);
+
+            clFinish(command_queue);
         }
+//
+//        {
+//            DataType * padded_row_host_ptr = (DataType *)clEnqueueMapBuffer(command_queue, padded_row_buffer, CL_TRUE, CL_MAP_READ, 0, sizeof(DataType) * padded_row_size, 0, NULL, NULL, &error);
+//			CheckError(error);
+//#pragma omp parallel for
+//            for (int64_t c = 0; c < e_mat_row_buffer.GetLength(); ++c) {
+//                e_mat_row_buffer[c] = padded_row_host_ptr[c];
+//            }
+//
+//            clEnqueueUnmapMemObject(command_queue, padded_row_buffer, padded_row_host_ptr, 0, nullptr, nullptr);
+//        }
+//#pragma omp parallel for
+//        for (int64_t c = 0; c < e_mat_row_buffer.GetLength(); ++c) {
+//            h_mat[r][c] = std::max(h_hat_mat_row_buffer[c], e_mat_row_buffer[c] + gap_start_penalty);
+//        }
+//
+//        f_mat_prev_row_buffer = std::move(f_mat_row_buffer);
 
         {
             DataType * padded_row_host_ptr = (DataType *)clEnqueueMapBuffer(command_queue, padded_row_buffer, CL_TRUE, CL_MAP_READ, 0, sizeof(DataType) * padded_row_size, 0, NULL, NULL, &error);
-			CheckError(error);
-#pragma omp parallel for
-            for (int64_t c = 0; c < e_mat_row_buffer.GetLength(); ++c) {
-                e_mat_row_buffer[c] = padded_row_host_ptr[c];
+            CheckError(error);
+            std::cout << "padded_row " << r << ": ";
+            for (int64_t c = 0; c < padded_row_size; ++c) {
+                std::cout << padded_row_host_ptr[c] << "\t";
             }
+            std::cout << std::endl;
 
             clEnqueueUnmapMemObject(command_queue, padded_row_buffer, padded_row_host_ptr, 0, nullptr, nullptr);
         }
-#pragma omp parallel for
-        for (int64_t c = 0; c < e_mat_row_buffer.GetLength(); ++c) {
-            h_mat[r][c] = std::max(h_hat_mat_row_buffer[c], e_mat_row_buffer[c] + gap_start_penalty);
+
+        // Calculate h_mat_row
+        {
+            error = 0;
+            error = clSetKernelArg(h_mat_row_kernel, 0, sizeof(cl_mem), &h_hat_mat_row_buffer);
+            error |= clSetKernelArg(h_mat_row_kernel, 1, sizeof(cl_mem), &padded_row_buffer);
+            error |= clSetKernelArg(h_mat_row_kernel, 2, sizeof(cl_mem), &h_mat_row_buffer);
+
+            CheckError(error);
+
+            size_t global = row_size;
+            error = clEnqueueNDRangeKernel(command_queue, h_mat_row_kernel, 1, NULL, &global, nullptr, 0, nullptr, nullptr);
+            CheckError(error);
+
+            clFinish(command_queue);
         }
 
-        f_mat_prev_row_buffer = std::move(f_mat_row_buffer);
+        {
+            DataType * h_mat_row_buffer_host_ptr = (DataType *)clEnqueueMapBuffer(command_queue, h_mat_row_buffer, CL_TRUE, CL_MAP_READ, 0, sizeof(DataType) * row_size, 0, NULL, NULL, &error);
+            CheckError(error);
+            for (int64_t c = 0; c < row_size; ++c) {
+                h_mat[r][c] = h_mat_row_buffer_host_ptr[c];
+            }
+
+            clEnqueueUnmapMemObject(command_queue, h_mat_row_buffer, h_mat_row_buffer_host_ptr, 0, nullptr, nullptr);
+        }
+
+        // Copy the current rows into the prev_rows
+        error = clEnqueueCopyBuffer(command_queue, f_mat_row_buffer, f_mat_prev_row_buffer, 0, 0, row_size * sizeof(DataType), 0, nullptr, nullptr);
+        CheckError(error);
+        clFinish(command_queue);
+
+        error = clEnqueueCopyBuffer(command_queue, h_mat_row_buffer, h_mat_prev_row_buffer, 0, 0, row_size * sizeof(DataType), 0, nullptr, nullptr);
+        CheckError(error);
+        clFinish(command_queue);
+
     }
     auto stop = std::chrono::steady_clock::now();
 
     std::cout << "SW took: " << std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count() << " ms" << std::endl;
 
-//    for (int r = 0; r < h_mat.GetNumRows(); ++r) {
-//        for (int c = 0; c < h_mat.GetNumCols(); ++c) {
-//            std::cout << h_mat[r][c] << "\t";
-//        }
-//        std::cout << "\n";
-//    }
-//    std::cout << std::endl;
+    for (int r = 0; r < h_mat.GetNumRows(); ++r) {
+        for (int c = 0; c < h_mat.GetNumCols(); ++c) {
+            std::cout << h_mat[r][c] << "\t";
+        }
+        std::cout << "\n";
+    }
+    std::cout << std::endl;
 
     clReleaseMemObject(padded_row_buffer);
     clReleaseProgram(program);
-    clReleaseKernel(calc_fmat_row_kernel);
+    clReleaseKernel(f_mat_row_kernel);
     clReleaseKernel(upsweep_kernel);
     clReleaseKernel(downsweep_kernel);
     clReleaseCommandQueue(command_queue);
