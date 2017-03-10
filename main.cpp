@@ -628,7 +628,11 @@ int main ()
 
     PrintDeviceInfo(deviceIds[DEVICE_NUMBER]);
 
+#ifdef __APPLE__ // Apple doesn't support out of order execution wtf?
     cl_command_queue command_queue = clCreateCommandQueue (context, deviceIds[DEVICE_NUMBER], 0, &error);
+#else
+    cl_command_queue command_queue = clCreateCommandQueue (context, deviceIds[DEVICE_NUMBER], CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, &error);
+#endif
     CheckError (error);
 
     cl_uint count = 1;
@@ -794,6 +798,11 @@ int main ()
 
     auto start = std::chrono::steady_clock::now();
     for (size_t r = 1; r < h_mat.GetNumRows(); ++r) {
+        cl_event subs_score_load_finished;
+
+        clEnqueueWriteBuffer(command_queue, subs_score_row_buffer, CL_FALSE, 0, sizeof(DataType) * row_size, query_character_row_score_map[seq2[r-1]].data(), 0, nullptr, &subs_score_load_finished);
+
+        cl_event f_mat_finished;
         // Calculate f_mat_row
         {
             error = 0;
@@ -804,28 +813,20 @@ int main ()
             CheckError(error);
 
             size_t global = row_size;
-            error = clEnqueueNDRangeKernel(command_queue, f_mat_row_kernel, 1, NULL, &global, nullptr, 0, nullptr, nullptr);
+            error = clEnqueueNDRangeKernel(command_queue, f_mat_row_kernel, 1, NULL, &global, nullptr, 0, nullptr, &f_mat_finished);
             CheckError(error);
-
-            clFinish(command_queue);
         }
 
+        clFinish(command_queue);
+
+        cl_event h_hat_mat_wait_events[2];
+        h_hat_mat_wait_events[0] = subs_score_load_finished;
+        h_hat_mat_wait_events[1] = f_mat_finished;
+        cl_event h_hat_mat_finished;
         // Calculate h_hat_mat_row
         {
             error = 0;
             error = clSetKernelArg(h_hat_mat_row_kernel, 0, sizeof(cl_mem), &h_mat_prev_row_buffer);
-
-            {
-                DataType * subs_score_row_buffer_host_ptr = (DataType *)clEnqueueMapBuffer(command_queue, subs_score_row_buffer, CL_TRUE, CL_MAP_WRITE, 0, sizeof(DataType) * row_size, 0, NULL, NULL, &error);
-                CheckError(error);
-                for (int64_t c = 1; c < row_size; ++c) {
-                    subs_score_row_buffer_host_ptr[c] = query_character_row_score_map[seq2[r-1]][c];
-                }
-
-                error = clEnqueueUnmapMemObject(command_queue, subs_score_row_buffer, subs_score_row_buffer_host_ptr, 0, nullptr, nullptr);
-                CheckError(error);
-            }
-
             error |= clSetKernelArg(h_hat_mat_row_kernel, 1, sizeof(cl_mem), &subs_score_row_buffer);
             error |= clSetKernelArg(h_hat_mat_row_kernel, 2, sizeof(cl_mem), &f_mat_row_buffer);
             error |= clSetKernelArg(h_hat_mat_row_kernel, 3, sizeof(cl_mem), &h_hat_mat_row_buffer);
@@ -833,16 +834,16 @@ int main ()
             CheckError(error);
 
             size_t global = row_size;
-            error = clEnqueueNDRangeKernel(command_queue, h_hat_mat_row_kernel, 1, NULL, &global, nullptr, 0, nullptr, nullptr);
+            error = clEnqueueNDRangeKernel(command_queue, h_hat_mat_row_kernel, 1, NULL, &global, nullptr, 2, h_hat_mat_wait_events, &h_hat_mat_finished);
             CheckError(error);
-
-            clFinish(command_queue);
         }
 
-        error = clEnqueueCopyBuffer(command_queue, h_hat_mat_row_buffer, padded_row_buffer, 0, 0, row_size * sizeof(DataType), 0, nullptr, nullptr);
+        cl_event padded_row_buffer_load_finished;
+        error = clEnqueueCopyBuffer(command_queue, h_hat_mat_row_buffer, padded_row_buffer, 0, 0, row_size * sizeof(DataType), 1, &h_hat_mat_finished, &padded_row_buffer_load_finished);
         CheckError(error);
         clFinish(command_queue);
 
+        cl_event upsweep_finished;
         // Upsweep
         for (size_t depth = 0; depth < log2(padded_row_size); ++depth) {
             error = 0;
@@ -851,21 +852,18 @@ int main ()
             CheckError(error);
 
             size_t global = padded_row_size / pow_of_2(depth+1);
-            error = clEnqueueNDRangeKernel(command_queue, upsweep_kernel, 1, NULL, &global, nullptr, 0, nullptr, nullptr);
+            error = clEnqueueNDRangeKernel(command_queue, upsweep_kernel, 1, NULL, &global, nullptr, 1, &padded_row_buffer_load_finished, &upsweep_finished);
             CheckError(error);
-
-            clFinish(command_queue);
         }
 
+        cl_event downsweep_initialization_finished;
         {
-            DataType * padded_row_host_ptr = (DataType *)clEnqueueMapBuffer(command_queue, padded_row_buffer, CL_TRUE, CL_MAP_WRITE, 0, sizeof(DataType) * padded_row_size, 0, NULL, NULL, &error);
-			CheckError(error);
-
-            padded_row_host_ptr[padded_row_size-1] = 0;
-
-            clEnqueueUnmapMemObject(command_queue, padded_row_buffer, padded_row_host_ptr, 0, nullptr, nullptr);
+            DataType zero = 0;
+            error = clEnqueueWriteBuffer(command_queue, padded_row_buffer, CL_FALSE, (padded_row_size-1) * sizeof(DataType), sizeof(DataType), &zero, 1, &upsweep_finished, &downsweep_initialization_finished);
+            CheckError(error);
         }
 
+        cl_event downsweep_finished;
         // Downsweep
         for (int64_t depth = log2(padded_row_size) - 1; depth >= 0; --depth) {
             error = 0;
@@ -874,13 +872,12 @@ int main ()
             CheckError(error);
 
             size_t global = padded_row_size / pow_of_2(depth+1);
-            error = clEnqueueNDRangeKernel(command_queue, downsweep_kernel, 1, NULL, &global, nullptr, 0, nullptr, nullptr);
+            error = clEnqueueNDRangeKernel(command_queue, downsweep_kernel, 1, NULL, &global, nullptr, 1, &downsweep_initialization_finished, &downsweep_finished);
             CheckError(error);
-
-            clFinish(command_queue);
         }
 
         // Calculate h_mat_row
+        cl_event h_mat_finished;
         {
             error = 0;
             error = clSetKernelArg(h_mat_row_kernel, 0, sizeof(cl_mem), &h_hat_mat_row_buffer);
@@ -890,38 +887,30 @@ int main ()
             CheckError(error);
 
             size_t global = row_size;
-            error = clEnqueueNDRangeKernel(command_queue, h_mat_row_kernel, 1, NULL, &global, nullptr, 0, nullptr, nullptr);
+            error = clEnqueueNDRangeKernel(command_queue, h_mat_row_kernel, 1, NULL, &global, nullptr, 1, &downsweep_finished, &h_mat_finished);
             CheckError(error);
-
-            clFinish(command_queue);
         }
 
         {
-            DataType * h_mat_row_buffer_host_ptr = (DataType *)clEnqueueMapBuffer(command_queue, h_mat_row_buffer, CL_TRUE, CL_MAP_READ, 0, sizeof(DataType) * row_size, 0, NULL, NULL, &error);
+            cl_event h_mat_to_host_finished;
+            error = clEnqueueReadBuffer(command_queue, h_mat_row_buffer, CL_FALSE, 0, sizeof(DataType) * row_size, h_mat[r], 1, &h_mat_finished, &h_mat_to_host_finished);
             CheckError(error);
-            for (int64_t c = 0; c < row_size; ++c) {
-                h_mat[r][c] = h_mat_row_buffer_host_ptr[c];
-            }
 
-            clEnqueueUnmapMemObject(command_queue, h_mat_row_buffer, h_mat_row_buffer_host_ptr, 0, nullptr, nullptr);
+            error = clEnqueueBarrierWithWaitList(command_queue, 1, &h_mat_to_host_finished, nullptr);
+            CheckError(error);
         }
 
-//        // Copy the current rows into the prev_rows
-//        error = clEnqueueCopyBuffer(command_queue, f_mat_row_buffer, f_mat_prev_row_buffer, 0, 0, row_size * sizeof(DataType), 0, nullptr, nullptr);
+//        error = clEnqueueBarrierWithWaitList(command_queue, 1, &h_mat_finished, nullptr);
 //        CheckError(error);
-//        clFinish(command_queue);
-//
-//        error = clEnqueueCopyBuffer(command_queue, h_mat_row_buffer, h_mat_prev_row_buffer, 0, 0, row_size * sizeof(DataType), 0, nullptr, nullptr);
-//        CheckError(error);
-//        clFinish(command_queue);
 
         std::swap(f_mat_row_buffer, f_mat_prev_row_buffer);
         std::swap(h_mat_row_buffer, h_mat_prev_row_buffer);
-
     }
     auto stop = std::chrono::steady_clock::now();
+    auto SW_time_milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count();
 
-    std::cout << "SW took: " << std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count() << " ms" << std::endl;
+    std::cout << "SW took: " << SW_time_milliseconds << " ms" << std::endl;
+    std::cout << "Estimated time to search entire genome: " << SW_time_milliseconds * (3'000'000'000 / seq1.size()) / 1000.0 << " s" << std::endl;
 
 //    for (int r = 0; r < h_mat.GetNumRows(); ++r) {
 //        for (int c = 0; c < h_mat.GetNumCols(); ++c) {
