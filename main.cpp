@@ -688,11 +688,11 @@ int main ()
     DataType gap_start_penalty = -8;
     DataType gap_extend_penalty = -1;
 
-    std::string seq1 = "CAGCCTCGCTTAG";
-    std::string seq2 = "AATGCCATTGCCGG";
+//    std::string seq1 = "CAGCCTCGCTTAG";
+//    std::string seq2 = "AATGCCATTGCCGG";
 
-//    std::string seq1 = GenerateRandomNucleotideString(20'000'000); // columns
-//    std::string seq2 = GenerateRandomNucleotideString(150); // rows
+    std::string seq1 = GenerateRandomNucleotideString(20'000'000); // columns
+    std::string seq2 = GenerateRandomNucleotideString(150); // rows
 
     std::cout << "seq1.size(): " << seq1.size() << std::endl;
     std::cout << "seq2.size(): " << seq2.size() << std::endl;
@@ -794,8 +794,6 @@ int main ()
         query_character_row_score_map.emplace('T', std::move(t_vec));
     }
 
-
-
     auto start = std::chrono::steady_clock::now();
     for (size_t r = 1; r < h_mat.GetNumRows(); ++r) {
         cl_event subs_score_load_finished;
@@ -817,14 +815,13 @@ int main ()
             CheckError(error);
         }
 
-        clFinish(command_queue);
-
-        cl_event h_hat_mat_wait_events[2];
-        h_hat_mat_wait_events[0] = subs_score_load_finished;
-        h_hat_mat_wait_events[1] = f_mat_finished;
         cl_event h_hat_mat_finished;
         // Calculate h_hat_mat_row
         {
+            cl_event h_hat_mat_wait_events[2];
+            h_hat_mat_wait_events[0] = subs_score_load_finished;
+            h_hat_mat_wait_events[1] = f_mat_finished;
+
             error = 0;
             error = clSetKernelArg(h_hat_mat_row_kernel, 0, sizeof(cl_mem), &h_mat_prev_row_buffer);
             error |= clSetKernelArg(h_hat_mat_row_kernel, 1, sizeof(cl_mem), &subs_score_row_buffer);
@@ -836,24 +833,45 @@ int main ()
             size_t global = row_size;
             error = clEnqueueNDRangeKernel(command_queue, h_hat_mat_row_kernel, 1, NULL, &global, nullptr, 2, h_hat_mat_wait_events, &h_hat_mat_finished);
             CheckError(error);
+
+            clReleaseEvent(subs_score_load_finished);
+            clReleaseEvent(f_mat_finished);
         }
 
         cl_event padded_row_buffer_load_finished;
-        error = clEnqueueCopyBuffer(command_queue, h_hat_mat_row_buffer, padded_row_buffer, 0, 0, row_size * sizeof(DataType), 1, &h_hat_mat_finished, &padded_row_buffer_load_finished);
-        CheckError(error);
-        clFinish(command_queue);
+        {
+            error = clEnqueueCopyBuffer(command_queue, h_hat_mat_row_buffer, padded_row_buffer, 0, 0, row_size * sizeof(DataType), 1, &h_hat_mat_finished, &padded_row_buffer_load_finished);
+            CheckError(error);
+            clReleaseEvent(h_hat_mat_finished);
+        }
 
         cl_event upsweep_finished;
-        // Upsweep
-        for (size_t depth = 0; depth < log2(padded_row_size); ++depth) {
-            error = 0;
-            error = clSetKernelArg(upsweep_kernel, 0, sizeof(cl_mem), &padded_row_buffer);
-            error |= clSetKernelArg(upsweep_kernel, 1, sizeof(cl_int), &depth);
-            CheckError(error);
+        {
+            // Upsweep
+            std::vector<cl_event> upsweep_row_finished(log2(padded_row_size) - 1);
+            for (size_t depth = 0; depth < log2(padded_row_size); ++depth) {
+                error = 0;
+                error = clSetKernelArg(upsweep_kernel, 0, sizeof(cl_mem), &padded_row_buffer);
+                error |= clSetKernelArg(upsweep_kernel, 1, sizeof(cl_int), &depth);
+                CheckError(error);
 
-            size_t global = padded_row_size / pow_of_2(depth+1);
-            error = clEnqueueNDRangeKernel(command_queue, upsweep_kernel, 1, NULL, &global, nullptr, 1, &padded_row_buffer_load_finished, &upsweep_finished);
-            CheckError(error);
+                size_t global = padded_row_size / pow_of_2(depth+1);
+                if (depth == log2(padded_row_size) - 1) {
+                    // Last iteration
+                    error = clEnqueueNDRangeKernel(command_queue, upsweep_kernel, 1, NULL, &global, nullptr, 1, &upsweep_row_finished[depth-1], &upsweep_finished);
+                } else if (depth == 0) {
+                    // First iteration
+                    error = clEnqueueNDRangeKernel(command_queue, upsweep_kernel, 1, NULL, &global, nullptr, 1, &padded_row_buffer_load_finished, &upsweep_row_finished[depth]);
+                    clReleaseEvent(padded_row_buffer_load_finished);
+                } else {
+                    error = clEnqueueNDRangeKernel(command_queue, upsweep_kernel, 1, NULL, &global, nullptr, 1, &upsweep_row_finished[depth-1], &upsweep_row_finished[depth]);
+                }
+                CheckError(error);
+            }
+
+            for (auto & event : upsweep_row_finished) {
+                clReleaseEvent(event);
+            }
         }
 
         cl_event downsweep_initialization_finished;
@@ -861,19 +879,39 @@ int main ()
             DataType zero = 0;
             error = clEnqueueWriteBuffer(command_queue, padded_row_buffer, CL_FALSE, (padded_row_size-1) * sizeof(DataType), sizeof(DataType), &zero, 1, &upsweep_finished, &downsweep_initialization_finished);
             CheckError(error);
+            clReleaseEvent(upsweep_finished);
         }
 
         cl_event downsweep_finished;
+        {
         // Downsweep
-        for (int64_t depth = log2(padded_row_size) - 1; depth >= 0; --depth) {
-            error = 0;
-            error = clSetKernelArg(downsweep_kernel, 0, sizeof(cl_mem), &padded_row_buffer);
-            error |= clSetKernelArg(downsweep_kernel, 1, sizeof(cl_int), &depth);
-            CheckError(error);
+        std::vector<cl_event> downsweep_row_finished(log2(padded_row_size) - 1);
 
-            size_t global = padded_row_size / pow_of_2(depth+1);
-            error = clEnqueueNDRangeKernel(command_queue, downsweep_kernel, 1, NULL, &global, nullptr, 1, &downsweep_initialization_finished, &downsweep_finished);
-            CheckError(error);
+            for (int64_t depth = log2(padded_row_size) - 1; depth >= 0; --depth) {
+                error = 0;
+                error = clSetKernelArg(downsweep_kernel, 0, sizeof(cl_mem), &padded_row_buffer);
+                error |= clSetKernelArg(downsweep_kernel, 1, sizeof(cl_int), &depth);
+                CheckError(error);
+
+                size_t global = padded_row_size / pow_of_2(depth+1);
+
+                if (depth == log2(padded_row_size) - 1) {
+                    // First iteration
+                    error = clEnqueueNDRangeKernel(command_queue, downsweep_kernel, 1, NULL, &global, nullptr, 1, &downsweep_initialization_finished, &downsweep_row_finished[depth-1]);
+                    clReleaseEvent(downsweep_initialization_finished);
+                } else if (depth == 0) {
+                    // Last iteration
+                    error = clEnqueueNDRangeKernel(command_queue, downsweep_kernel, 1, NULL, &global, nullptr, 1, &downsweep_row_finished[depth], &downsweep_finished);
+                } else {
+                    error = clEnqueueNDRangeKernel(command_queue, downsweep_kernel, 1, NULL, &global, nullptr, 1, &downsweep_row_finished[depth], &downsweep_row_finished[depth-1]);
+                }
+
+                CheckError(error);
+            }
+
+            for (auto & event : downsweep_row_finished) {
+                clReleaseEvent(event);
+            }
         }
 
         // Calculate h_mat_row
@@ -889,21 +927,25 @@ int main ()
             size_t global = row_size;
             error = clEnqueueNDRangeKernel(command_queue, h_mat_row_kernel, 1, NULL, &global, nullptr, 1, &downsweep_finished, &h_mat_finished);
             CheckError(error);
+            clReleaseEvent(downsweep_finished);
         }
 
-        // Copy to host
+//        // Copy to host
+//        {
+//            cl_event h_mat_to_host_finished;
+//            error = clEnqueueReadBuffer(command_queue, h_mat_row_buffer, CL_FALSE, 0, sizeof(DataType) * row_size, h_mat[r], 1, &h_mat_finished, &h_mat_to_host_finished); // Somehow bugged? Crashes Nsight
+//            CheckError(error);
+//
+//            error = clEnqueueBarrierWithWaitList(command_queue, 1, &h_mat_to_host_finished, nullptr);
+//            CheckError(error);
+//        }
+
+        // Skip copying to host
         {
-            cl_event h_mat_to_host_finished;
-            error = clEnqueueReadBuffer(command_queue, h_mat_row_buffer, CL_FALSE, 0, sizeof(DataType) * row_size, h_mat[r], 1, &h_mat_finished, &h_mat_to_host_finished);
+            error = clEnqueueBarrierWithWaitList(command_queue, 1, &h_mat_finished, nullptr);
             CheckError(error);
-
-            error = clEnqueueBarrierWithWaitList(command_queue, 1, &h_mat_to_host_finished, nullptr);
-            CheckError(error);
+            clReleaseEvent(h_mat_finished);
         }
-
-//        error = clEnqueueBarrierWithWaitList(command_queue, 1, &h_mat_finished, nullptr);
-//        CheckError(error);
-
         std::swap(f_mat_row_buffer, f_mat_prev_row_buffer);
         std::swap(h_mat_row_buffer, h_mat_prev_row_buffer);
     }
