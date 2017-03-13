@@ -688,11 +688,11 @@ int main ()
     DataType gap_start_penalty = -8;
     DataType gap_extend_penalty = -1;
 
-//    std::string seq1 = "CAGCCTCGCTTAG";
-//    std::string seq2 = "AATGCCATTGCCGG";
+    std::string seq1 = "CAGCCTCGCTTAG";
+    std::string seq2 = "AATGCCATTGCCGG";
 
-    std::string seq1 = GenerateRandomNucleotideString(20'000'000); // columns
-    std::string seq2 = GenerateRandomNucleotideString(150); // rows
+//    std::string seq1 = GenerateRandomNucleotideString(20'000'000); // columns
+//    std::string seq2 = GenerateRandomNucleotideString(150); // rows
 
     std::cout << "seq1.size(): " << seq1.size() << std::endl;
     std::cout << "seq2.size(): " << seq2.size() << std::endl;
@@ -896,8 +896,8 @@ int main ()
         }
 
         cl_event downsweep_initialization_finished;
+        DataType zero = 0;
         {
-            DataType zero = 0;
             error = clEnqueueWriteBuffer(command_queue, padded_row_buffer, CL_FALSE, (padded_row_size-1) * sizeof(DataType), sizeof(DataType), &zero, 1, &upsweep_finished, &downsweep_initialization_finished);
             CheckError(error);
             clReleaseEvent(upsweep_finished);
@@ -951,19 +951,16 @@ int main ()
             clReleaseEvent(downsweep_finished);
         }
 
-        // Copy to host
-        {
-            error = clEnqueueReadBuffer(command_queue, h_mat_row_buffer, CL_FALSE, 0, sizeof(DataType) * row_size, h_mat[r], 1, &h_mat_finished, nullptr);
-            CheckError(error);
-            clReleaseEvent(h_mat_finished);
+//        // Copy to host
+//        {
+//            error = clEnqueueReadBuffer(command_queue, h_mat_row_buffer, CL_FALSE, 0, sizeof(DataType) * row_size, h_mat[r], 1, &h_mat_finished, nullptr);
+//            CheckError(error);
+//            clReleaseEvent(h_mat_finished);
+//        }
 
+        {
             clFinish(command_queue);
         }
-
-        //// Skip copying to host
-        //{
-        //    clFinish(command_queue);
-        //}
 
         std::swap(f_mat_row_buffer, f_mat_prev_row_buffer);
         std::swap(h_mat_row_buffer, h_mat_prev_row_buffer);
