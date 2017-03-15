@@ -951,12 +951,12 @@ int main ()
             clReleaseEvent(downsweep_finished);
         }
 
-//        // Copy to host
-//        {
-//            error = clEnqueueReadBuffer(command_queue, h_mat_row_buffer, CL_FALSE, 0, sizeof(DataType) * row_size, h_mat[r], 1, &h_mat_finished, nullptr);
-//            CheckError(error);
-//            clReleaseEvent(h_mat_finished);
-//        }
+        // Copy to host
+        {
+            error = clEnqueueReadBuffer(command_queue, h_mat_row_buffer, CL_FALSE, 0, sizeof(DataType) * row_size, h_mat[r], 1, &h_mat_finished, nullptr);
+            CheckError(error);
+            clReleaseEvent(h_mat_finished);
+        }
 
         {
             clFinish(command_queue);
@@ -971,13 +971,13 @@ int main ()
     std::cout << "SW took: " << SW_time_milliseconds << " ms" << std::endl;
     std::cout << "Estimated time to search entire genome: " << SW_time_milliseconds * (3000000000 / seq1.size()) / 1000.0 << " s" << std::endl;
 
-//    for (int r = 0; r < h_mat.GetNumRows(); ++r) {
-//        for (int c = 0; c < h_mat.GetNumCols(); ++c) {
-//            std::cout << h_mat[r][c] << "\t";
-//        }
-//        std::cout << "\n";
-//    }
-//    std::cout << std::endl;
+    for (int r = 0; r < h_mat.GetNumRows(); ++r) {
+        for (int c = 0; c < h_mat.GetNumCols(); ++c) {
+            std::cout << h_mat[r][c] << "\t";
+        }
+        std::cout << "\n";
+    }
+    std::cout << std::endl;
 
     clReleaseMemObject(f_mat_row_buffer);
     clReleaseMemObject(f_mat_prev_row_buffer);

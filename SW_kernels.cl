@@ -28,7 +28,7 @@
 //}
 
 kernel void f_mat_row_kernel(global int * f_mat_prev_row, global int * h_mat_prev_row, global int * f_mat_row) {
-	const int id = get_global_id(0);
+	const size_t id = get_global_id(0);
 
     if (id == 0) {
         return;
@@ -38,7 +38,7 @@ kernel void f_mat_row_kernel(global int * f_mat_prev_row, global int * h_mat_pre
 }
 
 kernel void h_hat_mat_row_kernel(global int * h_mat_prev_row, global int * subs_score_row, global int * f_mat_row_buffer, global int * h_hat_mat_row_buffer) {
-    const int id = get_global_id(0);
+    const size_t id = get_global_id(0);
 
     if (id == 0) {
         return;
@@ -48,7 +48,7 @@ kernel void h_hat_mat_row_kernel(global int * h_mat_prev_row, global int * subs_
 }
 
 kernel void h_mat_row_kernel(global int * h_hat_mat_row_buffer, global int * padded_row_buffer, global int * h_mat_row_buffer) {
-    const int id = get_global_id(0);
+    const size_t id = get_global_id(0);
 
     if (id == 0) {
         return;
