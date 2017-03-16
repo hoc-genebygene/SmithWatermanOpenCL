@@ -664,11 +664,11 @@ int main ()
         throw std::runtime_error(getErrorString(error));
     }
 
-    cl_kernel f_mat_row_kernel = clCreateKernel(program, "f_mat_row_kernel", &error);
+    cl_kernel f_mat_and_h_hat_mat_row_kernel = clCreateKernel(program, "f_mat_and_h_hat_mat_row_kernel", &error);
     CheckError(error);
 
-    cl_kernel h_hat_mat_row_kernel = clCreateKernel(program, "h_hat_mat_row_kernel", &error);
-    CheckError(error);
+//    cl_kernel h_hat_mat_row_kernel = clCreateKernel(program, "h_hat_mat_row_kernel", &error);
+//    CheckError(error);
 
     cl_kernel upsweep_kernel = clCreateKernel(program, "upsweep", &error);
     CheckError(error);
@@ -688,11 +688,11 @@ int main ()
     DataType gap_start_penalty = -8;
     DataType gap_extend_penalty = -1;
 
-    std::string seq1 = "CAGCCTCGCTTAG";
-    std::string seq2 = "AATGCCATTGCCGG";
+//    std::string seq1 = "CAGCCTCGCTTAG";
+//    std::string seq2 = "AATGCCATTGCCGG";
 
-//    std::string seq1 = GenerateRandomNucleotideString(20'000'000); // columns
-//    std::string seq2 = GenerateRandomNucleotideString(150); // rows
+    std::string seq1 = GenerateRandomNucleotideString(20'000'000); // columns
+    std::string seq2 = GenerateRandomNucleotideString(150); // rows
 
     std::cout << "seq1.size(): " << seq1.size() << std::endl;
     std::cout << "seq2.size(): " << seq2.size() << std::endl;
@@ -811,59 +811,28 @@ int main ()
 
     auto start = std::chrono::steady_clock::now();
     for (size_t r = 1; r < h_mat.GetNumRows(); ++r) {
-        cl_event f_mat_finished;
+        cl_event f_mat_and_h_hat_mat_finished;
         // Calculate f_mat_row
         {
             error = 0;
-            error = clSetKernelArg(f_mat_row_kernel, 0, sizeof(cl_mem), &f_mat_prev_row_buffer);
-            error |= clSetKernelArg(f_mat_row_kernel, 1, sizeof(cl_mem), &h_mat_prev_row_buffer);
-            error |= clSetKernelArg(f_mat_row_kernel, 2, sizeof(cl_mem), &f_mat_row_buffer);
+            error = clSetKernelArg(f_mat_and_h_hat_mat_row_kernel, 0, sizeof(cl_mem), &f_mat_prev_row_buffer);
+            error |= clSetKernelArg(f_mat_and_h_hat_mat_row_kernel, 1, sizeof(cl_mem), &h_mat_prev_row_buffer);
+            error |= clSetKernelArg(f_mat_and_h_hat_mat_row_kernel, 2, sizeof(cl_mem), &f_mat_row_buffer);
+            error |= clSetKernelArg(f_mat_and_h_hat_mat_row_kernel, 3, sizeof(cl_mem), &(query_character_row_score_map[seq2[r-1]]));
+            error |= clSetKernelArg(f_mat_and_h_hat_mat_row_kernel, 4, sizeof(cl_mem), &h_hat_mat_row_buffer);
 
             CheckError(error);
 
             size_t global = row_size;
-            error = clEnqueueNDRangeKernel(command_queue, f_mat_row_kernel, 1, NULL, &global, nullptr, 0, nullptr, &f_mat_finished);
+            error = clEnqueueNDRangeKernel(command_queue, f_mat_and_h_hat_mat_row_kernel, 1, NULL, &global, nullptr, 0, nullptr, &f_mat_and_h_hat_mat_finished);
             CheckError(error);
-        }
-
-//        {
-//            cl_mem subs_score_row_buffer = query_character_row_score_map[seq2[r-1]];
-//
-//            DataType * subs_score_row_buffer_host_ptr = (DataType *)clEnqueueMapBuffer(command_queue, subs_score_row_buffer, CL_TRUE, CL_MAP_READ, 0, sizeof(DataType) * row_size, 0, nullptr, nullptr, &error);
-//            CheckError(error);
-//
-//            std::cout << "subs_score_row[" << r << "]: ";
-//            for (int c = 0; c < row_size; ++c) {
-//                std::cout << subs_score_row_buffer_host_ptr[c] << "\t";
-//            }
-//            std::cout << std::endl;
-//
-//            clEnqueueUnmapMemObject(command_queue, subs_score_row_buffer, subs_score_row_buffer_host_ptr, 0, nullptr, nullptr);
-//        }
-
-        cl_event h_hat_mat_finished;
-        // Calculate h_hat_mat_row
-        {
-            error = 0;
-            error = clSetKernelArg(h_hat_mat_row_kernel, 0, sizeof(cl_mem), &h_mat_prev_row_buffer);
-            error |= clSetKernelArg(h_hat_mat_row_kernel, 1, sizeof(cl_mem), &(query_character_row_score_map[seq2[r-1]]));
-            error |= clSetKernelArg(h_hat_mat_row_kernel, 2, sizeof(cl_mem), &f_mat_row_buffer);
-            error |= clSetKernelArg(h_hat_mat_row_kernel, 3, sizeof(cl_mem), &h_hat_mat_row_buffer);
-
-            CheckError(error);
-
-            size_t global = row_size;
-            error = clEnqueueNDRangeKernel(command_queue, h_hat_mat_row_kernel, 1, NULL, &global, nullptr, 1, &f_mat_finished, &h_hat_mat_finished);
-            CheckError(error);
-
-            clReleaseEvent(f_mat_finished);
         }
 
         cl_event padded_row_buffer_load_finished;
         {
-            error = clEnqueueCopyBuffer(command_queue, h_hat_mat_row_buffer, padded_row_buffer, 0, 0, row_size * sizeof(DataType), 1, &h_hat_mat_finished, &padded_row_buffer_load_finished);
+            error = clEnqueueCopyBuffer(command_queue, h_hat_mat_row_buffer, padded_row_buffer, 0, 0, row_size * sizeof(DataType), 1, &f_mat_and_h_hat_mat_finished, &padded_row_buffer_load_finished);
             CheckError(error);
-            clReleaseEvent(h_hat_mat_finished);
+            clReleaseEvent(f_mat_and_h_hat_mat_finished);
         }
 
         cl_event upsweep_finished;
@@ -951,12 +920,12 @@ int main ()
             clReleaseEvent(downsweep_finished);
         }
 
-        // Copy to host
-        {
-            error = clEnqueueReadBuffer(command_queue, h_mat_row_buffer, CL_FALSE, 0, sizeof(DataType) * row_size, h_mat[r], 1, &h_mat_finished, nullptr);
-            CheckError(error);
-            clReleaseEvent(h_mat_finished);
-        }
+//        // Copy to host
+//        {
+//            error = clEnqueueReadBuffer(command_queue, h_mat_row_buffer, CL_FALSE, 0, sizeof(DataType) * row_size, h_mat[r], 1, &h_mat_finished, nullptr);
+//            CheckError(error);
+//            clReleaseEvent(h_mat_finished);
+//        }
 
         {
             clFinish(command_queue);
@@ -969,15 +938,15 @@ int main ()
     auto SW_time_milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count();
 
     std::cout << "SW took: " << SW_time_milliseconds << " ms" << std::endl;
-    std::cout << "Estimated time to search entire genome: " << SW_time_milliseconds * (3000000000 / seq1.size()) / 1000.0 << " s" << std::endl;
+    std::cout << "Estimated time to search entire genome: " << std::chrono::duration_cast<std::chrono::nanoseconds>(stop - start).count() * (3000000000 / seq1.size()) / 1000000000.0 << " s" << std::endl;
 
-    for (int r = 0; r < h_mat.GetNumRows(); ++r) {
-        for (int c = 0; c < h_mat.GetNumCols(); ++c) {
-            std::cout << h_mat[r][c] << "\t";
-        }
-        std::cout << "\n";
-    }
-    std::cout << std::endl;
+//    for (int r = 0; r < h_mat.GetNumRows(); ++r) {
+//        for (int c = 0; c < h_mat.GetNumCols(); ++c) {
+//            std::cout << h_mat[r][c] << "\t";
+//        }
+//        std::cout << "\n";
+//    }
+//    std::cout << std::endl;
 
     clReleaseMemObject(f_mat_row_buffer);
     clReleaseMemObject(f_mat_prev_row_buffer);
@@ -991,8 +960,8 @@ int main ()
     clReleaseMemObject(t_subs_score_row_buffer);
 
 
-    clReleaseKernel(f_mat_row_kernel);
-    clReleaseKernel(h_hat_mat_row_kernel);
+    clReleaseKernel(f_mat_and_h_hat_mat_row_kernel);
+    //clReleaseKernel(h_hat_mat_row_kernel);
     clReleaseKernel(upsweep_kernel);
     clReleaseKernel(downsweep_kernel);
     clReleaseKernel(h_mat_row_kernel);
